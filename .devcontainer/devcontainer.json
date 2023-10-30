@@ -1,0 +1,22 @@
+{
+    "dockerComposeFile": [
+        "../docker-compose.yaml"
+    ],
+    "workspaceFolder": "/home/worker/smac_transformer",
+    "service": "dev",
+    "customizations": {
+        "vscode": {
+            // Set *default* container specific settings.json values on container create.
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/bin/python3"
+            },
+            // Add the IDs of extensions you want installed when the container is created.
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "mhutchie.git-graph",
+                "eamodio.gitlens"
+            ]
+        }
+    }
+}

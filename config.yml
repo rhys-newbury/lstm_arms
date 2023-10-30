@@ -1,0 +1,71 @@
+# You must give a unique ID to each job (rdzv_id) and change the endpoint appropriately
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: lstm-train5
+spec:
+  maxRetry: 3
+  minAvailable: 1
+  schedulerName: volcano
+  queue: default
+  policies:
+    - event: PodEvicted
+      action: RestartJob
+  tasks:
+    - replicas: 1
+      name: pytorch-training
+      policies:
+        - event: TaskCompleted
+          action: CompleteJob
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: taco
+          securityContext:
+            runAsUser: 1000
+          nodeSelector:
+            nvidia.com/gpu.product: NVIDIA-GeForce-RTX-2080-Ti
+          containers:
+            - name: elastic-worker-sac2
+              image: "mu00120825.eng.monash.edu.au:5021/lstm_arms:latest"
+              resources:
+                limits:
+                  cpu: 2 # 8 CPU Cores
+                  memory: 5G # 8 Gigabytes of Memory
+                  nvidia.com/gpu: 1 # 1 GPU
+                  ephemeral-storage: "3Gi"
+              env:
+                - name: CUDA_VISIBLE_DEVICES
+                  value: "0"
+                - name: WANDB_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: wandb
+                      key: api-key
+              imagePullPolicy: Always
+              # command: ["/bin/bash", "-c", "--"]
+              # args: ["while true; do sleep 30; done;"]
+
+              command: ["python"]
+              args:
+                [
+                  "/home/worker/smac_transformer/LSTM.py",
+                  "--workspace=/mnt/storage/lstm_data",
+                  "--lr=0.0001",
+                  "--num-epochs=500",
+                  "--horizon=10",
+                ]
+              volumeMounts:
+                - name: storage
+                  mountPath: /mnt/storage
+          volumes:
+            - name: storage
+              flexVolume:
+                driver: fstab/cifs
+                fsType: cifs
+                secretRef:
+                  name: smb-creds
+                options:
+                  networkPath: //130.194.128.238/slow
+                  mountOptions: dir_mode=0777,file_mode=0777,noperm

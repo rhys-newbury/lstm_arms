@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  dev:
+    volumes:
+      - ./:/home/worker/smac_transformer
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ~/.Xauthority:/root/.Xauthority
+      - /mnt/wslg:/mnt/wslg
+    network_mode: "host"
+    build:
+      dockerfile: Dockerfile
+      context: .
+    image: ${REGISTRY_URL}/lstm_arms:latest
+    tty: true
+    stdin_open: true
+    privileged: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - DISPLAY=:0
+      - XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
+      - WANDB_API_KEY=${WANDB_API_KEY}
