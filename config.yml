@@ -2,7 +2,7 @@
 apiVersion: batch.volcano.sh/v1alpha1
 kind: Job
 metadata:
-  name: lstm-train5
+  name: lstm-train8
 spec:
   maxRetry: 3
   minAvailable: 1
@@ -32,7 +32,7 @@ spec:
               resources:
                 limits:
                   cpu: 2 # 8 CPU Cores
-                  memory: 5G # 8 Gigabytes of Memory
+                  memory: 20G # 8 Gigabytes of Memory
                   nvidia.com/gpu: 1 # 1 GPU
                   ephemeral-storage: "3Gi"
               env:
@@ -51,8 +51,8 @@ spec:
               args:
                 [
                   "/home/worker/smac_transformer/LSTM.py",
-                  "--workspace=/mnt/storage/lstm_data",
-                  "--lr=0.0001",
+                  "--workspace=/mnt/storage/combined2",
+                  "--lr=0.0002",
                   "--num-epochs=500",
                   "--horizon=10",
                 ]
