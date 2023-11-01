@@ -27,7 +27,7 @@ class CustomDataset(Dataset):
             l = []
             for i in workspace.glob("*.npy"):
                 idx = int(i.name.split("_")[1][:-4]) // 1000
-                if idx != 1:
+                if idx == 1:
                     data_ = np.load(str(i))
                     zero_batch_indices = np.where(np.all(data_ == 0, axis=(1, 2)))
 
@@ -35,6 +35,7 @@ class CustomDataset(Dataset):
                     filtered_data = np.delete(data_, zero_batch_indices, axis=0)
                     l.append(filtered_data)
             data = np.concatenate(l, axis=0)
+            data = data[: int(data.shape[0] * 0.8), :, :]
         else:
             l = []
             for i in workspace.glob("*.npy"):
@@ -47,6 +48,7 @@ class CustomDataset(Dataset):
                     filtered_data = np.delete(data_, zero_batch_indices, axis=0)
                     l.append(filtered_data)
             data = np.concatenate(l, axis=0)
+            data = data[int(data.shape[0] * 0.8) :, :, :]
 
         data = torch.tensor(data, dtype=torch.float32, device=device)
         self.goals = data[:, 1:, -10:-7]
@@ -66,16 +68,24 @@ class CustomDataset(Dataset):
         target_goal = self.goals[idx]
         target_vel = self.velocity_goal[idx]
         target_pos = self.position_goal[idx]
-        return sample, (target_goal, target_vel, target_pos)
+        return sample, (target_goal, target_pos, target_vel)
 
 
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_heads=1):
         super(LSTMModel, self).__init__()
 
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=6, batch_first=True)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=10, batch_first=True)
+
         self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_size, num_heads=num_heads
+            embed_dim=hidden_size, num_heads=num_heads, batch_first=True
+        )
+
+        self.after_attention = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * 3),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size * 3, hidden_size),
+            nn.LeakyReLU(),
         )
 
         self.position_model = nn.Sequential(
@@ -122,6 +132,9 @@ class LSTMModel(nn.Module):
         attention_output, _ = self.attention(lstm_out, lstm_out, lstm_out)
 
         combined_output = F.leaky_relu(lstm_out + attention_output, negative_slope=0.01)
+
+        combined_output = F.leaky_relu(self.after_attention(combined_output))
+
         position_output, velocity_output, joint_pos_output = None, None, None
 
         if calc_all or calc_pos:
@@ -386,11 +399,13 @@ async def train_(
                 )
                 vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
 
+            # fmt: off
             tasks = [
                 calc_pos(history,horizon,data_pos,model,criterion,target_goal,weights,pos_loss,hidden),
                 calc_joint_pos(history,horizon,data_joint,model,criterion,target_pos,weights,joint_pos_loss,hidden),
                 calc_vel(history,horizon,data_vel,model,criterion,target_vel,weights,vel_loss,hidden),
             ]
+            # fmt: on
 
             pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
 
@@ -405,9 +420,12 @@ async def train_(
             loss.backward()
             optimizer.step()
 
-        train_loss = (total_pos_loss + total_joint_pos_loss + total_vel_loss) / len(
-            train_loader
-        )
+        total_pos_loss /= len(train_loader)
+        total_joint_pos_loss /= len(train_loader)
+        total_vel_loss /= len(train_loader)
+
+        train_loss = total_pos_loss + total_joint_pos_loss + total_vel_loss
+
         print(f"Epoch {epoch + 1}, Training Loss: {train_loss}")
 
         # Test loop
@@ -442,11 +460,13 @@ async def train_(
                     )
                     vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
 
+                # fmt: off
                 tasks = [
-                    calc_pos(history,horizon,data_pos,model,criterion,target_goal,weights,pos_loss,hidden,False),
-                    calc_joint_pos(history,horizon,data_joint,model,criterion,target_pos,weights,joint_pos_loss,hidden,False),
-                    calc_vel(history,horizon,data_vel,model,criterion,target_vel,weights,vel_loss,hidden,False),
+                    calc_pos(history,horizon,data_pos,model,criterion,target_goal,weights,pos_loss,hidden, False),
+                    calc_joint_pos(history,horizon,data_joint,model,criterion,target_pos,weights,joint_pos_loss,hidden, False),
+                    calc_vel(history,horizon,data_vel,model,criterion,target_vel,weights,vel_loss,hidden, False),
                 ]
+                # fmt: on
 
                 pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
                 loss = pos_loss + joint_pos_loss + vel_loss
@@ -455,7 +475,11 @@ async def train_(
                 test_total_joint_pos_loss += joint_pos_loss
                 test_total_vel_loss += vel_loss
 
+        test_total_pos_loss /= len(test_loader)
+        test_total_joint_pos_loss /= len(test_loader)
+        test_total_vel_loss /= len(test_loader)
         test_loss /= len(test_loader)
+
         print(f"Epoch {epoch + 1}, Test Loss: {test_loss}")
         if USE_WANDB:
             wandb.log(
@@ -471,10 +495,12 @@ async def train_(
                     "train_total_vel_loss": total_vel_loss,
                 }
             )
+        # fmt: off
         plot(epoch,test_loader,model,history,horizon,number=3,test=True,use_gt=False)
         plot(epoch,train_loader,model,history,horizon,number=3,test=False,use_gt=False)
         plot(epoch,test_loader,model,history,horizon,number=3,test=True,use_gt=True)
         plot(epoch,train_loader,model,history,horizon,number=3,test=False,use_gt=True)
+        # fmt: on
 
 
 if __name__ == "__main__":
