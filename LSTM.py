@@ -134,10 +134,10 @@ class LSTMModel(nn.Module):
         return (position_output, joint_pos_output, velocity_output), hidden
 
 
-def plot(epoch, test_loader, model, history, horizon, number=3, test=True):
-    for idx, (data, (target_pos, target_joint_pos, target_vel)) in enumerate(
-        test_loader
-    ):
+def plot(
+    epoch, test_loader, model, history, horizon, number=3, test=True, use_gt=False
+):
+    for idx, (data, (target_pos, _, _)) in enumerate(test_loader):
         if idx == number:
             break
 
@@ -150,12 +150,13 @@ def plot(epoch, test_loader, model, history, horizon, number=3, test=True):
             input_data = data[
                 :, t : t + 1, :
             ].clone()  # Clone the tensor before feeding it to the model
-            (pos, joint_pos, vel), hidden = model(input_data, hidden)
+            (pos, joint_pos, vel), hidden = model(input_data, hidden, calc_all=True)
 
             if t > history:
                 data[:, t + 1 : t + 2, -10:-7] = pos.clone().detach()
-                data[:, t + 1 : t + 2, 0:7] = joint_pos.clone().detach()
-                data[:, t + 1 : t + 2, 7:14] = vel.clone().detach()
+                if not use_gt:
+                    data[:, t + 1 : t + 2, 0:7] = joint_pos.clone().detach()
+                    data[:, t + 1 : t + 2, 7:14] = vel.clone().detach()
 
             predicted_total[t : t + 1, :] = pos
 
@@ -202,7 +203,9 @@ def plot(epoch, test_loader, model, history, horizon, number=3, test=True):
             wandb.log(
                 {
                     "Epoch": epoch,
-                    f"plot_{idx}_{'test' if test else 'train'}": wandb.Image(plt),
+                    f"plot_{idx}_{'test' if test else 'train'}_{'gt' if use_gt else 'no_gt'}": wandb.Image(
+                        plt
+                    ),
                 }
             )
         plt.close()
@@ -357,10 +360,12 @@ async def train_(
 
     for epoch in range(num_epochs):
         model.train()
+        total_pos_loss = 0
+        total_vel_loss = 0
+        total_joint_pos_loss = 0
         for idx, (data, (target_goal, target_pos, target_vel)) in enumerate(
             train_loader
         ):
-            print(idx, data.shape)
             hidden = None
             pos_loss = 0
             joint_pos_loss = 0
@@ -371,9 +376,7 @@ async def train_(
             data_vel = data.detach().clone()
 
             for t in range(history):
-                input_data = data[
-                    :, t : t + 1, :
-                ].clone()  # Clone the tensor before feeding it to the model
+                input_data = data[:, t : t + 1, :].clone()
                 # Use the input data which is the data cloned.
                 (pos, joint_pos, vel), hidden = model(input_data, hidden, calc_all=True)
                 # We calculate the loss for each of the branches!
@@ -383,61 +386,36 @@ async def train_(
                 )
                 vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
 
-            print(pos_loss, joint_pos_loss, vel_loss)
-
             tasks = [
-                calc_pos(
-                    history,
-                    horizon,
-                    data_pos,
-                    model,
-                    criterion,
-                    target_goal,
-                    weights,
-                    pos_loss,
-                    hidden,
-                ),
-                calc_joint_pos(
-                    history,
-                    horizon,
-                    data_joint,
-                    model,
-                    criterion,
-                    target_pos,
-                    weights,
-                    joint_pos_loss,
-                    hidden,
-                ),
-                calc_vel(
-                    history,
-                    horizon,
-                    data_vel,
-                    model,
-                    criterion,
-                    target_vel,
-                    weights,
-                    vel_loss,
-                    hidden,
-                ),
+                calc_pos(history,horizon,data_pos,model,criterion,target_goal,weights,pos_loss,hidden),
+                calc_joint_pos(history,horizon,data_joint,model,criterion,target_pos,weights,joint_pos_loss,hidden),
+                calc_vel(history,horizon,data_vel,model,criterion,target_vel,weights,vel_loss,hidden),
             ]
 
             pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
 
             loss = pos_loss + joint_pos_loss + vel_loss
 
-            print(loss)
+            total_pos_loss += pos_loss
+            total_joint_pos_loss += joint_pos_loss
+            total_vel_loss += vel_loss
 
             # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-        train_loss = loss
-        print(f"Epoch {epoch + 1}, Training Loss: {loss.item()}")
+        train_loss = (total_pos_loss + total_joint_pos_loss + total_vel_loss) / len(
+            train_loader
+        )
+        print(f"Epoch {epoch + 1}, Training Loss: {train_loss}")
 
         # Test loop
         model.eval()
         test_loss = 0.0
+        test_total_pos_loss = 0
+        test_total_vel_loss = 0
+        test_total_joint_pos_loss = 0
         with torch.no_grad():
             for data, (target_goal, target_pos, target_vel) in test_loader:
                 hidden = None
@@ -450,9 +428,7 @@ async def train_(
                 data_vel = data.detach().clone()
 
                 for t in range(history):
-                    input_data = data[
-                        :, t : t + 1, :
-                    ].clone()  # Clone the tensor before feeding it to the model
+                    input_data = data[:, t : t + 1, :].clone()
                     # Use the input data which is the data cloned.
                     (pos, joint_pos, vel), hidden = model(
                         input_data, hidden, calc_all=True
@@ -466,50 +442,18 @@ async def train_(
                     )
                     vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
 
-                print(pos_loss, joint_pos_loss, vel_loss)
-
                 tasks = [
-                    calc_pos(
-                        history,
-                        horizon,
-                        data_pos,
-                        model,
-                        criterion,
-                        target_goal,
-                        weights,
-                        pos_loss,
-                        hidden,
-                        False,
-                    ),
-                    calc_joint_pos(
-                        history,
-                        horizon,
-                        data_joint,
-                        model,
-                        criterion,
-                        target_pos,
-                        weights,
-                        joint_pos_loss,
-                        hidden,
-                        False,
-                    ),
-                    calc_vel(
-                        history,
-                        horizon,
-                        data_vel,
-                        model,
-                        criterion,
-                        target_vel,
-                        weights,
-                        vel_loss,
-                        hidden,
-                        False,
-                    ),
+                    calc_pos(history,horizon,data_pos,model,criterion,target_goal,weights,pos_loss,hidden,False),
+                    calc_joint_pos(history,horizon,data_joint,model,criterion,target_pos,weights,joint_pos_loss,hidden,False),
+                    calc_vel(history,horizon,data_vel,model,criterion,target_vel,weights,vel_loss,hidden,False),
                 ]
 
                 pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
                 loss = pos_loss + joint_pos_loss + vel_loss
                 test_loss += loss.item()
+                test_total_pos_loss += pos_loss
+                test_total_joint_pos_loss += joint_pos_loss
+                test_total_vel_loss += vel_loss
 
         test_loss /= len(test_loader)
         print(f"Epoch {epoch + 1}, Test Loss: {test_loss}")
@@ -519,10 +463,18 @@ async def train_(
                     "Epoch": epoch + 1,
                     "Test Loss": test_loss,
                     "Train Loss": train_loss,
+                    "test_total_pos_loss": test_total_pos_loss,
+                    "test_total_joint_pos_loss": test_total_joint_pos_loss,
+                    "test_total_vel_loss": test_total_vel_loss,
+                    "train_total_pos_loss": total_pos_loss,
+                    "train_total_joint_pos_loss": total_joint_pos_loss,
+                    "train_total_vel_loss": total_vel_loss,
                 }
             )
-        plot(epoch, test_loader, model, history, horizon, number=3, test=True)
-        plot(epoch, train_loader, model, history, horizon, number=3, test=False)
+        plot(epoch,test_loader,model,history,horizon,number=3,test=True,use_gt=False)
+        plot(epoch,train_loader,model,history,horizon,number=3,test=False,use_gt=False)
+        plot(epoch,test_loader,model,history,horizon,number=3,test=True,use_gt=True)
+        plot(epoch,train_loader,model,history,horizon,number=3,test=False,use_gt=True)
 
 
 if __name__ == "__main__":
