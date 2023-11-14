@@ -4,13 +4,15 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
-from torch.utils.data import random_split
+
+# from torch.utils.data import random_split
 from pathlib import Path
 import typer
 from typing import Annotated
 import torch.nn.functional as F
 import asyncio
 from typing import List, Tuple, Optional
+
 app = typer.Typer()
 
 device = "cuda"
@@ -27,16 +29,21 @@ vel_nomralize = None
 pos_normalize = None
 joint_pos_normalize = None
 action_normalize = None
+
+
 class CustomDataset(Dataset):
     def __init__(
-        self, train=True, workspace: Path = Path("/home/worker/smac_transformer/new_data/"),  normalize=True
+        self,
+        train=True,
+        workspace: Path = Path("/home/worker/smac_transformer/new_data/"),
+        normalize=True,
     ):
         global vel_nomralize
         global pos_normalize
         global joint_pos_normalize
         global action_normalize
         if train:
-            l = []
+            data_list = []
             for i in workspace.glob("*.npy"):
                 idx = int(i.name.split("_")[1])
                 idx = idx if idx < 1000 else idx // 1000
@@ -46,11 +53,11 @@ class CustomDataset(Dataset):
 
                     # Filter out batches where all elements are zero
                     filtered_data = np.delete(data_, zero_batch_indices, axis=0)
-                    l.append(filtered_data)
-            data = np.concatenate(l, axis=0)
+                    data_list.append(filtered_data)
+            data = np.concatenate(data_list, axis=0)
             data = data[: int(data.shape[0] * 0.8), :, :]
         else:
-            l = []
+            data_list = []
             for i in workspace.glob("*.npy"):
                 idx = int(i.name.split("_")[1])
                 idx = idx if idx < 1000 else idx // 1000
@@ -60,24 +67,34 @@ class CustomDataset(Dataset):
 
                     # Filter out batches where all elements are zero
                     filtered_data = np.delete(data_, zero_batch_indices, axis=0)
-                    l.append(filtered_data)
-            data = np.concatenate(l, axis=0)
+                    data_list.append(filtered_data)
+            data = np.concatenate(data_list, axis=0)
             data = data[int(data.shape[0] * 0.8) :, :, :]
 
-        data = torch.tensor(data, dtype=torch.float32, device=device) #[:, :, 1:]
-        
+        data = torch.tensor(data, dtype=torch.float32, device=device)  # [:, :, 1:]
+
         if vel_nomralize is None and normalize:
-            vel_nomralize = torch.amax(torch.abs(data[:, :, JOINT_VEL_RANGE[0] : JOINT_VEL_RANGE[1]]), axis=(0,1))
-            pos_normalize = torch.amax(torch.abs(data[:, :, POS_RANGE[0] : POS_RANGE[1]]), axis=(0,1))
-            joint_pos_normalize = torch.amax(torch.abs(data[:, :, JOINT_POS_RANGE[0] : JOINT_POS_RANGE[1]]), axis=(0,1))
-            action_normalize = torch.amax(torch.abs(data[:, :, POS_RANGE[1] :]), axis=(0,1))
+            vel_nomralize = torch.amax(
+                torch.abs(data[:, :, JOINT_VEL_RANGE[0] : JOINT_VEL_RANGE[1]]),
+                axis=(0, 1),
+            )
+            pos_normalize = torch.amax(
+                torch.abs(data[:, :, POS_RANGE[0] : POS_RANGE[1]]), axis=(0, 1)
+            )
+            joint_pos_normalize = torch.amax(
+                torch.abs(data[:, :, JOINT_POS_RANGE[0] : JOINT_POS_RANGE[1]]),
+                axis=(0, 1),
+            )
+            action_normalize = torch.amax(
+                torch.abs(data[:, :, POS_RANGE[1] :]), axis=(0, 1)
+            )
 
         if normalize:
             data[:, :, JOINT_VEL_RANGE[0] : JOINT_VEL_RANGE[1]] /= vel_nomralize
             data[:, :, POS_RANGE[0] : POS_RANGE[1]] /= pos_normalize
             data[:, :, JOINT_POS_RANGE[0] : JOINT_POS_RANGE[1]] /= joint_pos_normalize
-            data[:, :, POS_RANGE[1] : ] /= action_normalize
-        
+            data[:, :, POS_RANGE[1] :] /= action_normalize
+
         self.goals = data[:, 1:, POS_RANGE[0] : POS_RANGE[1]]
         self.position_goal = data[:, 1:, JOINT_POS_RANGE[0] : JOINT_POS_RANGE[1]]
         self.velocity_goal = data[:, 1:, JOINT_VEL_RANGE[0] : JOINT_VEL_RANGE[1]]
@@ -95,6 +112,7 @@ class CustomDataset(Dataset):
         target_vel = self.velocity_goal[idx].to(device)
         target_pos = self.position_goal[idx].to(device)
         return sample, (target_goal, target_pos, target_vel)
+
 
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_heads=1):
@@ -146,7 +164,7 @@ class LSTMModel(nn.Module):
     def forward(
         self,
         x,
-        lstm_states : Optional[Tuple[torch.Tensor, torch.Tensor]] =None,
+        lstm_states: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         calc_all=False,
         calc_pos=False,
         calc_joint_pos=False,
@@ -245,77 +263,95 @@ def plot(
         plt.tight_layout()
         # plt.savefig(f"/home/worker/smac_transformer/plot_{epoch}.png")
         if USE_WANDB:
+            plot_name = (
+                f"plot_{idx}_{'test' if test else 'train'}_"
+                f"{'gt' if use_gt else 'no_gt'}"
+            )
             wandb.log(
                 {
                     "Epoch": epoch,
-                    f"plot_{idx}_{'test' if test else 'train'}_{'gt' if use_gt else 'no_gt'}": wandb.Image(
-                        plt
-                    ),
+                    plot_name: wandb.Image(plt),
                 }
             )
         plt.close()
 
 
 def calc_loss(
-    history : int,
-    horizon : int,
-    model : nn.Module,
+    history: int,
+    horizon: int,
+    model: nn.Module,
     criterion: nn.modules.loss._Loss,
-    weights : List[int],
-    hidden : Tuple[torch.Tensor, torch.Tensor],
+    weights: List[int],
+    hidden: Tuple[torch.Tensor, torch.Tensor],
     enable_grad=True,
 ):
-    async def _inner(data,
-                target,
-                loss,       
-                calc_pos=False,
-                calc_vel=False,
-                calc_joint_pos=False,
-                data_range = [0,0],
-                result_idx = 0):
+    async def _inner(
+        data,
+        target,
+        loss,
+        calc_pos=False,
+        calc_vel=False,
+        calc_joint_pos=False,
+        data_range=[0, 0],
+        result_idx=0,
+    ):
         with torch.set_grad_enabled(enable_grad):
             t = history
             input_data = data[
                 :, t : t + 1, :
             ].clone()  # Clone the tensor before feeding it to the model
-            result, hidden_pos = model(input_data, hidden, calc_pos=calc_pos, calc_vel=calc_vel, calc_joint_pos=calc_joint_pos)
+            result, hidden_pos = model(
+                input_data,
+                hidden,
+                calc_pos=calc_pos,
+                calc_vel=calc_vel,
+                calc_joint_pos=calc_joint_pos,
+            )
             value = result[result_idx]
-            data[:, t + 1 : t + 2, data_range[0] : data_range[1]] = value.clone().detach()
+            data[
+                :, t + 1 : t + 2, data_range[0] : data_range[1]
+            ] = value.clone().detach()
             loss += criterion(value, target[:, t : t + 1, :]) * weights[t]
 
             for t in range(history + 1, history + horizon):
-                # We need three copies of the hidden state for the three copies of the data
+                # We need three copies of the hidden state
+                # for the three copies of the data
                 input_data = data[
                     :, t : t + 1, :
                 ].clone()  # Clone the tensor before feeding it to the model
-                result, hidden_pos = model(input_data, hidden_pos, calc_pos=calc_pos, calc_vel=calc_vel, calc_joint_pos=calc_joint_pos)
+                result, hidden_pos = model(
+                    input_data,
+                    hidden_pos,
+                    calc_pos=calc_pos,
+                    calc_vel=calc_vel,
+                    calc_joint_pos=calc_joint_pos,
+                )
                 value = result[result_idx]
-                
+
                 data[
                     :, t + 1 : t + 2, data_range[0] : data_range[1]
                 ] = value.clone().detach()
                 loss += criterion(value, target[:, t : t + 1, :]) * weights[t]
             return loss
-        
+
     return _inner
 
 
-
 def calc_all(
-    history : int,
-    horizon : int,
-    data : torch.Tensor,
-    model : nn.Module,
-    criterion : nn.modules.loss._Loss,
-    target_pos : torch.Tensor,
+    history: int,
+    horizon: int,
+    data: torch.Tensor,
+    model: nn.Module,
+    criterion: nn.modules.loss._Loss,
+    target_pos: torch.Tensor,
     target_joint_pos: torch.Tensor,
     target_vel: torch.Tensor,
-    weights : List[int],
-    pos_loss : torch.Tensor,
+    weights: List[int],
+    pos_loss: torch.Tensor,
     joint_pos_loss: torch.Tensor,
     vel_loss: torch.Tensor,
     hidden: Tuple[torch.Tensor, torch.Tensor],
-    enable_grad : bool =True,
+    enable_grad: bool = True,
 ):
     with torch.set_grad_enabled(enable_grad):
         t = history
@@ -367,15 +403,15 @@ def calc_all(
 
 
 async def train_(
-    workspace : Path,
-    hidden_size : int,
-    lr : float,
-    batch_size : int,
-    horizon : int,
-    history : int,
-    num_epochs : int,
-    beta : float,
-    finetune_epochs : int,
+    workspace: Path,
+    hidden_size: int,
+    lr: float,
+    batch_size: int,
+    horizon: int,
+    history: int,
+    num_epochs: int,
+    beta: float,
+    finetune_epochs: int,
 ):
     shuffle = True  # Set to True if you want to shuffle the data during training
     train_loader = DataLoader(
@@ -431,15 +467,42 @@ async def train_(
                 vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
 
             if epoch < num_epochs:
-                # fmt: off
-                general_calc = calc_loss(history, horizon, model, criterion, weights, hidden, enable_grad=True)
+                general_calc = calc_loss(
+                    history,
+                    horizon,
+                    model,
+                    criterion,
+                    weights,
+                    hidden,
+                    enable_grad=True,
+                )
                 tasks = [
-                    general_calc(data_pos, target_goal, pos_loss, calc_pos=True, data_range=POS_RANGE, result_idx=0),
-                    general_calc(data_joint, target_pos, joint_pos_loss, calc_joint_pos=True, data_range=JOINT_POS_RANGE, result_idx=1),
-                    general_calc(data_vel, target_vel, vel_loss, calc_vel=True, data_range=JOINT_VEL_RANGE, result_idx=2),
+                    general_calc(
+                        data_pos,
+                        target_goal,
+                        pos_loss,
+                        calc_pos=True,
+                        data_range=POS_RANGE,
+                        result_idx=0,
+                    ),
+                    general_calc(
+                        data_joint,
+                        target_pos,
+                        joint_pos_loss,
+                        calc_joint_pos=True,
+                        data_range=JOINT_POS_RANGE,
+                        result_idx=1,
+                    ),
+                    general_calc(
+                        data_vel,
+                        target_vel,
+                        vel_loss,
+                        calc_vel=True,
+                        data_range=JOINT_VEL_RANGE,
+                        result_idx=2,
+                    ),
                 ]
                 pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
-                # fmt: on
 
             else:
                 pos_loss, joint_pos_loss, vel_loss = calc_all(
@@ -509,15 +572,39 @@ async def train_(
                     )
                     vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
 
-                # fmt: off
-                general_calc = calc_loss(history, horizon, model, criterion, weights, hidden, enable_grad=True)
+                general_calc = calc_loss(
+                    history,
+                    horizon,
+                    model,
+                    criterion,
+                    weights,
+                    hidden,
+                    enable_grad=True,
+                )
                 tasks = [
-                    general_calc(data_pos, target_goal, calc_pos=True, data_range=POS_RANGE, result_idx=0),
-                    general_calc(data_joint, target_pos, calc_joint_pos=True, data_range=JOINT_POS_RANGE, result_idx=1),
-                    general_calc(data_vel, target_vel, calc_vel=True, data_range=JOINT_VEL_RANGE, result_idx=2),
+                    general_calc(
+                        data_pos,
+                        target_goal,
+                        calc_pos=True,
+                        data_range=POS_RANGE,
+                        result_idx=0,
+                    ),
+                    general_calc(
+                        data_joint,
+                        target_pos,
+                        calc_joint_pos=True,
+                        data_range=JOINT_POS_RANGE,
+                        result_idx=1,
+                    ),
+                    general_calc(
+                        data_vel,
+                        target_vel,
+                        calc_vel=True,
+                        data_range=JOINT_VEL_RANGE,
+                        result_idx=2,
+                    ),
                 ]
                 pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
-                # fmt: on
 
                 pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
                 loss = pos_loss + joint_pos_loss + vel_loss
@@ -581,7 +668,6 @@ def train(
             finetune_epochs,
         )
     )
-
 
 
 if __name__ == "__main__":
