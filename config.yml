@@ -2,7 +2,7 @@
 apiVersion: batch.volcano.sh/v1alpha1
 kind: Job
 metadata:
-  name: lstm-train8
+  name: lstm-train25
 spec:
   maxRetry: 3
   minAvailable: 1
@@ -25,16 +25,16 @@ spec:
           securityContext:
             runAsUser: 1000
           nodeSelector:
-            nvidia.com/gpu.product: NVIDIA-GeForce-RTX-2080-Ti
+            nvidia.com/gpu.product: NVIDIA-GeForce-GTX-1080-Ti
           containers:
             - name: elastic-worker-sac2
               image: "mu00120825.eng.monash.edu.au:5021/lstm_arms:latest"
               resources:
                 limits:
-                  cpu: 2 # 8 CPU Cores
+                  cpu: 4 # 8 CPU Cores
                   memory: 20G # 8 Gigabytes of Memory
                   nvidia.com/gpu: 1 # 1 GPU
-                  ephemeral-storage: "3Gi"
+                  ephemeral-storage: "10Gi"
               env:
                 - name: CUDA_VISIBLE_DEVICES
                   value: "0"
@@ -51,10 +51,13 @@ spec:
               args:
                 [
                   "/home/worker/smac_transformer/LSTM.py",
-                  "--workspace=/mnt/storage/combined2",
-                  "--lr=0.0002",
-                  "--num-epochs=500",
-                  "--horizon=10",
+                  "--workspace=/mnt/storage/tmp",
+                  "--lr=0.001",
+                  "--num-epochs=800",
+                  "--finetune-epochs=800",
+                  "--horizon=0",
+                  "--history=100",
+                  "--batch-size=256",
                 ]
               volumeMounts:
                 - name: storage

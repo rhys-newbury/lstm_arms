@@ -16,7 +16,7 @@ from typing import List, Tuple, Optional
 app = typer.Typer()
 
 device = "cuda"
-USE_WANDB = False
+USE_WANDB = True
 if USE_WANDB:
     import wandb
 
@@ -176,7 +176,7 @@ class LSTMModel(nn.Module):
 
         combined_output = F.leaky_relu(lstm_out + attention_output, negative_slope=0.01)
 
-        combined_output = F.leaky_relu(self.after_attention(combined_output))
+        # combined_output = F.leaky_relu(self.after_attention(combined_output))
 
         position_output, velocity_output, joint_pos_output = None, None, None
 
@@ -201,7 +201,13 @@ def plot(
 
         data = data[:1, : history + horizon, :]
         target_pos = target_pos[0, : history + horizon, :]
+        target_joint_pos = target_joint_pos[0, : history + horizon, :]
+        target_vel = target_vel[0, : history + horizon, :]
+
         predicted_total = torch.zeros_like(target_pos, device=device)
+        predicted_joint_pos = torch.zeros_like(target_joint_pos, device=device)
+        predicted_joint_vel = torch.zeros_like(target_vel, device=device)
+
         hidden = None
 
         for t in range(horizon + history):
@@ -222,43 +228,31 @@ def plot(
                 ] = vel.clone().detach()
 
             predicted_total[t : t + 1, :] = pos
+            predicted_joint_pos[t : t + 1, :] = joint_pos
+            predicted_joint_vel[t : t + 1, :] = vel
 
         predicted_total = predicted_total.squeeze()
+        predicted_joint_pos = predicted_joint_pos.squeeze()
+        predicted_joint_vel = predicted_joint_vel.squeeze()
         target_pos = target_pos.squeeze()
 
-        # Extracting individual dimensions
-        dimension_0 = target_pos[:, 0].detach().cpu().numpy()
-        dimension_1 = target_pos[:, 1].detach().cpu().numpy()
-        dimension_2 = target_pos[:, 2].detach().cpu().numpy()
+        # POSITION PLOTS
+        dims = ["x", "y", "z"]
 
-        predicted_0 = predicted_total[:, 0].detach().cpu().numpy()
-        predicted_1 = predicted_total[:, 1].detach().cpu().numpy()
-        predicted_2 = predicted_total[:, 2].detach().cpu().numpy()
-
-        # Create subplots
         fig, axs = plt.subplots(3, 1, figsize=(10, 8))
 
-        # Plotting the first dimension
-        axs[0].plot(dimension_0, label="Target Position")
-        axs[0].plot(predicted_0, label="Predicted Position")
-        axs[0].set_title("X")
-        axs[0].legend()
+        for joint_idx, dim in enumerate(dims):
+            # Extracting individual dimensions
+            dimension_0 = target_pos[:, joint_idx].detach().cpu().numpy()
+            predicted_0 = predicted_total[:, joint_idx].detach().cpu().numpy()
 
-        # Plotting the second dimension
-        axs[1].plot(dimension_1, label="Target Position")
-        axs[1].plot(predicted_1, label="Predicted Position")
-        axs[1].set_title("Y")
-        axs[1].legend()
+            # Plotting the first dimension
+            axs[joint_idx].plot(dimension_0, label="Target Position")
+            axs[joint_idx].plot(predicted_0, label="Predicted Position")
+            axs[joint_idx].set_title(dim)
+            axs[joint_idx].legend()
 
-        # Plotting the third dimension
-        axs[2].plot(dimension_2, label="Target Position")
-        axs[2].plot(predicted_2, label="Predicted Position")
-        axs[2].set_title("Z")
-        axs[2].legend()
-
-        axs[0].axvline(x=history, color="r", linestyle="-")
-        axs[1].axvline(x=history, color="r", linestyle="-")
-        axs[2].axvline(x=history, color="r", linestyle="-")
+            axs[joint_idx].axvline(x=history, color="r", linestyle="-")
 
         plt.tight_layout()
         # plt.savefig(f"/home/worker/smac_transformer/plot_{epoch}.png")
@@ -273,6 +267,75 @@ def plot(
                     plot_name: wandb.Image(plt),
                 }
             )
+        plt.clf()
+        plt.close()
+
+        # JOINT POSITION PLOTS
+        dims = ["0", "1", "2", "3", "4", "5", "6"]
+        # Create subplots
+        fig, axs = plt.subplots(7, 1, figsize=(10, 8))
+
+        for joint_idx, dim in enumerate(dims):
+            # Extracting individual dimensions
+            dimension_0 = target_joint_pos[:, joint_idx].detach().cpu().numpy()
+            predicted_0 = predicted_joint_pos[:, joint_idx].detach().cpu().numpy()
+
+            # Plotting the first dimension
+            axs[joint_idx].plot(dimension_0, label="Target Position")
+            axs[joint_idx].plot(predicted_0, label="Predicted Position")
+            axs[joint_idx].set_title(dim)
+            axs[joint_idx].legend()
+
+            axs[joint_idx].axvline(x=history, color="r", linestyle="-")
+
+        plt.tight_layout()
+        # plt.savefig(f"/home/worker/smac_transformer/plot_{epoch}.png")
+        if USE_WANDB:
+            plot_name = (
+                f"joint_pos_plot_{idx}_{'test' if test else 'train'}_"
+                f"{'gt' if use_gt else 'no_gt'}"
+            )
+            wandb.log(
+                {
+                    "Epoch": epoch,
+                    plot_name: wandb.Image(plt),
+                }
+            )
+        plt.clf()
+        plt.close()
+
+        # JOINT VELOCITY PLOTS
+        dims = ["0", "1", "2", "3", "4", "5", "6"]
+        # Create subplots
+        fig, axs = plt.subplots(7, 1, figsize=(10, 8))
+
+        for joint_idx, dim in enumerate(dims):
+            # Extracting individual dimensions
+            dimension_0 = target_vel[:, joint_idx].detach().cpu().numpy()
+            predicted_0 = predicted_joint_vel[:, joint_idx].detach().cpu().numpy()
+
+            # Plotting the first dimension
+            axs[joint_idx].plot(dimension_0, label="Target Position")
+            axs[joint_idx].plot(predicted_0, label="Predicted Position")
+            axs[joint_idx].set_title(dim)
+            axs[joint_idx].legend()
+
+            axs[joint_idx].axvline(x=history, color="r", linestyle="-")
+
+        plt.tight_layout()
+        # plt.savefig(f"/home/worker/smac_transformer/plot_{epoch}.png")
+        if USE_WANDB:
+            plot_name = (
+                f"vel_plot_{idx}_{'test' if test else 'train'}_"
+                f"{'gt' if use_gt else 'no_gt'}"
+            )
+            wandb.log(
+                {
+                    "Epoch": epoch,
+                    plot_name: wandb.Image(plt),
+                }
+            )
+        plt.clf()
         plt.close()
 
 
@@ -454,8 +517,8 @@ async def train_(
             data_joint = data.detach().clone()
             data_vel = data.detach().clone()
 
-            for t in range(history):
-                print(t)
+            for t in range(history - 1):
+                # print(t)
                 input_data = data[:, t : t + 1, :].clone()
                 # Use the input data which is the data cloned.
                 (pos, joint_pos, vel), hidden = model(input_data, hidden, calc_all=True)
@@ -466,7 +529,7 @@ async def train_(
                 )
                 vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
 
-            if epoch < num_epochs:
+            if horizon != 0 and epoch < num_epochs:
                 general_calc = calc_loss(
                     history,
                     horizon,
@@ -503,8 +566,7 @@ async def train_(
                     ),
                 ]
                 pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
-
-            else:
+            elif horizon != 0:
                 pos_loss, joint_pos_loss, vel_loss = calc_all(
                     history,
                     horizon,
@@ -571,42 +633,45 @@ async def train_(
                         criterion(joint_pos, target_pos[:, t : t + 1, :]) * weights[t]
                     )
                     vel_loss += criterion(vel, target_vel[:, t : t + 1, :]) * weights[t]
+                    
+                if horizon != 0:
+                    general_calc = calc_loss(
+                        history,
+                        horizon,
+                        model,
+                        criterion,
+                        weights,
+                        hidden,
+                        enable_grad=True,
+                    )
+                    tasks = [
+                        general_calc(
+                            data_pos,
+                            target_goal,
+                            pos_loss,
+                            calc_pos=True,
+                            data_range=POS_RANGE,
+                            result_idx=0,
+                        ),
+                        general_calc(
+                            data_joint,
+                            target_pos,
+                            joint_pos_loss,
+                            calc_joint_pos=True,
+                            data_range=JOINT_POS_RANGE,
+                            result_idx=1,
+                        ),
+                        general_calc(
+                            data_vel,
+                            target_vel,
+                            vel_loss,
+                            calc_vel=True,
+                            data_range=JOINT_VEL_RANGE,
+                            result_idx=2,
+                        ),
+                    ]
+                    pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
 
-                general_calc = calc_loss(
-                    history,
-                    horizon,
-                    model,
-                    criterion,
-                    weights,
-                    hidden,
-                    enable_grad=True,
-                )
-                tasks = [
-                    general_calc(
-                        data_pos,
-                        target_goal,
-                        calc_pos=True,
-                        data_range=POS_RANGE,
-                        result_idx=0,
-                    ),
-                    general_calc(
-                        data_joint,
-                        target_pos,
-                        calc_joint_pos=True,
-                        data_range=JOINT_POS_RANGE,
-                        result_idx=1,
-                    ),
-                    general_calc(
-                        data_vel,
-                        target_vel,
-                        calc_vel=True,
-                        data_range=JOINT_VEL_RANGE,
-                        result_idx=2,
-                    ),
-                ]
-                pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
-
-                pos_loss, joint_pos_loss, vel_loss = await asyncio.gather(*tasks)
                 loss = pos_loss + joint_pos_loss + vel_loss
                 test_loss += loss.item()
                 test_total_pos_loss += pos_loss
